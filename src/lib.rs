@@ -11,7 +11,7 @@
 //! push-to-talk calls over the same paths. It is the lofi lane on purpose.
 //! Where a hifi codec preserves the recording, Pipit preserves the message.
 //!
-//! # Two codecs, one for each kind of link
+//! # Three codecs, one for each kind of link
 //!
 //! - [`Codec::ImaAdpcm`]: 4 bits per sample, about 32 kbps at 8 kHz. A
 //!   cheaper description of the waveform, so it still sounds like the
@@ -21,6 +21,10 @@
 //!   *rebuild* speech: voicing, pitch, vocal-tract shape, energy. That is
 //!   why a ten-second memo fits in about 3 KB, and why it sounds synthetic.
 //!   See [`lpc10`] for what it does and does not claim about FIPS-137.
+//! - [`Codec::Lpc10Half`]: the same vocoder at 1,600 bps, by sending the
+//!   vocal tract once per two frames instead of every frame. The tract moves
+//!   slowly while pitch and energy move fast, so this drops a third of the
+//!   airtime for almost no measured spectral cost. Ten seconds is 2 KB.
 //!
 //! Clips name their codec, so a receiver decodes either without prior
 //! agreement and a third can be added without a format break.
@@ -51,9 +55,10 @@
 //!
 //! let pcm: Vec<i16> = (0..8_000).map(|i| ((i as f32 / 8.0).sin() * 8000.0) as i16).collect();
 //!
-//! // One second of speech: 4,168 bytes as ADPCM, 333 through the vocoder.
-//! let clip = encode_clip(&pcm, ClipParams::lpc10())?;
-//! assert_eq!(clip.len(), 333);
+//! // One second of speech: 4,168 bytes as ADPCM, 333 through the vocoder,
+//! // 225 at half rate.
+//! let clip = encode_clip(&pcm, ClipParams::lpc10_half())?;
+//! assert_eq!(clip.len(), 225);
 //!
 //! let (header, decoded) = decode_clip(&clip)?;
 //! assert_eq!(header.duration_ms(), 1000);

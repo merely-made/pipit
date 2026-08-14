@@ -4,10 +4,10 @@ A small speech codec for voices that travel light.
 
 ## Status (2026-08-13)
 
-Founded. Rungs 0 and 1 of three are implemented and tested; not yet
-published to crates.io.
+Founded and published as `pipit` 0.1.0. All three rungs of the plan are
+implemented and tested.
 
-Two codecs, one for each kind of link:
+Three codecs, one for each kind of link:
 
 - **IMA ADPCM**, 4 bits per sample, about 32 kbps. A cheaper description of
   the waveform, so it still sounds like the recording. Measured 34.8 dB SNR
@@ -19,6 +19,12 @@ Two codecs, one for each kind of link:
   for LoRa. Measured 1.97 dB mean log spectral distortion, pitch recovered
   within one quantizer step across 80 to 400 Hz, and voiced, unvoiced, and
   silent frames classified correctly.
+- **LPC-10 half rate**, 1,600 bps, a third less airtime again. The vocal
+  tract is sent once per two frames and interpolated between, because the
+  tract moves slowly while pitch and energy move fast. Measured cost is
+  0.03 dB of spectral distortion on steady speech and 0.02 dB on a fast
+  moving tract, for 36% fewer bits. Pitch and voicing are untouched, being
+  still sent every frame.
 
 Shared properties:
 
@@ -28,7 +34,8 @@ Shared properties:
   complete parametric description of its own audio.
 - **Clips** are the stored form: an 18-byte header naming codec, mode,
   sample rate, and frame geometry, then frames back to back. Ten seconds of
-  8 kHz speech is 40 KB as ADPCM and 3.1 KB through the vocoder.
+  8 kHz speech is 40 KB as ADPCM, 3.1 KB through the vocoder, and 2.0 KB at
+  half rate.
 - `#![no_std]`, `#![forbid(unsafe_code)]`, zero dependencies, including the
   float math the vocoder needs. Verified building for
   `thumbv7em-none-eabihf` (nRF52840) and `riscv32imac-unknown-none-elf`
@@ -39,10 +46,17 @@ Shared properties:
   pattern is a valid vocoder frame that yields a stable filter, and the
   decoder recovers to correct output after arbitrary garbage.
 
-The remaining rung is a Codec2-class coder, which is optional and gated on a
-real need for quality or M17 interoperability. The rung plan lives in the
+Codec2 bitstream compatibility was investigated and ruled out rather than
+deferred: Codec2's low modes quantize against trained codebooks published
+only under LGPL, and a decoder cannot read the bitstream without the exact
+codebook the encoder searched, so an implementation written from the
+literature cannot reach compatibility at all. FFmpeg, which prefers native
+decoders, still requires libcodec2 for the same reason. Interop, if it is
+ever wanted, belongs in an application that links the real library under a
+compatible licence, not in this crate. The reasoning is recorded in the
 sibling Retinue repository, in
-`design_docs/2026-08-13_lofi_voice_codec_scoping.md`.
+`design_docs/2026-08-13_rung2_codec2_class_decision.md`, alongside the rung
+plan in `design_docs/2026-08-13_lofi_voice_codec_scoping.md`.
 
 ### On FIPS-137
 
@@ -69,9 +83,10 @@ Whole clips, which is what a recorded message is. Pick the codec by the
 link you are sending over:
 
 ```rust
-let clip = pipit::encode_clip(&pcm, pipit::ClipParams::lpc10())?;  // LoRa
-let clip = pipit::encode_clip(&pcm, pipit::ClipParams::adpcm())?;  // WiFi
-let (header, pcm) = pipit::decode_clip(&clip)?;                    // either
+let clip = pipit::encode_clip(&pcm, pipit::ClipParams::lpc10_half())?;  // tight LoRa
+let clip = pipit::encode_clip(&pcm, pipit::ClipParams::lpc10())?;       // LoRa
+let clip = pipit::encode_clip(&pcm, pipit::ClipParams::adpcm())?;       // WiFi
+let (header, pcm) = pipit::decode_clip(&clip)?;                         // any of them
 ```
 
 Frame at a time, which is what a call drives:

@@ -30,6 +30,7 @@
 use crate::Error;
 
 mod analysis;
+pub mod half;
 mod quant;
 mod synth;
 

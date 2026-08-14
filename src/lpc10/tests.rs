@@ -403,3 +403,7 @@ fn wrong_buffer_sizes_are_refused() {
             .is_err()
     );
 }
+
+// Half-rate superframe tests live in `tests/half_rate.rs`, keeping this
+// file under the 600-line ceiling.
+mod half_rate;

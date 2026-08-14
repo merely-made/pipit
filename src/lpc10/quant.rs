@@ -29,7 +29,7 @@ use crate::math;
 /// Bits given to each reflection coefficient, lowest order first. Early
 /// coefficients carry the formants that decide intelligibility, so they get
 /// the resolution.
-const RC_BITS: [u32; ORDER] = [5, 5, 5, 5, 4, 4, 4, 4, 3, 2];
+pub(super) const RC_BITS: [u32; ORDER] = [5, 5, 5, 5, 4, 4, 4, 4, 3, 2];
 
 /// The first two coefficients are quantized as log area ratios, where equal
 /// steps matter equally to the ear. This bounds that domain.
@@ -41,6 +41,8 @@ const RC_LIMIT: f32 = 0.99;
 
 /// Gain is logarithmic across this many powers of two, starting here. Index
 /// zero is reserved for silence.
+pub(super) const PITCH_BITS: u32 = 6;
+pub(super) const GAIN_BITS: u32 = 5;
 const GAIN_MIN_LOG2: f32 = -1.0;
 const GAIN_MAX_LOG2: f32 = 14.0;
 
@@ -70,21 +72,21 @@ fn dequantize(code: u32, lo: f32, hi: f32, bits: u32) -> f32 {
     lo + (code.min(levels) as f32 / levels as f32) * (hi - lo)
 }
 
-/// Writes fields most significant bit first.
-struct BitWriter {
-    bytes: [u8; FRAME_BYTES],
+/// Writes fields most significant bit first into an `N`-byte frame.
+pub(super) struct BitWriter<const N: usize> {
+    pub(super) bytes: [u8; N],
     position: usize,
 }
 
-impl BitWriter {
-    fn new() -> Self {
+impl<const N: usize> BitWriter<N> {
+    pub(super) fn new() -> Self {
         Self {
-            bytes: [0; FRAME_BYTES],
+            bytes: [0; N],
             position: 0,
         }
     }
 
-    fn write(&mut self, value: u32, bits: u32) {
+    pub(super) fn write(&mut self, value: u32, bits: u32) {
         for i in (0..bits).rev() {
             if (value >> i) & 1 == 1 {
                 self.bytes[self.position / 8] |= 0x80 >> (self.position % 8);
@@ -95,17 +97,17 @@ impl BitWriter {
 }
 
 /// Reads fields back in the same order.
-struct BitReader<'a> {
+pub(super) struct BitReader<'a> {
     bytes: &'a [u8],
     position: usize,
 }
 
 impl<'a> BitReader<'a> {
-    fn new(bytes: &'a [u8]) -> Self {
+    pub(super) fn new(bytes: &'a [u8]) -> Self {
         Self { bytes, position: 0 }
     }
 
-    fn read(&mut self, bits: u32) -> u32 {
+    pub(super) fn read(&mut self, bits: u32) -> u32 {
         let mut value = 0;
         for _ in 0..bits {
             let byte = self.bytes[self.position / 8];
@@ -117,39 +119,78 @@ impl<'a> BitReader<'a> {
     }
 }
 
-/// Pack analysed parameters into one frame.
-pub fn pack(params: &Params) -> [u8; FRAME_BYTES] {
-    let mut writer = BitWriter::new();
-    writer.write(u32::from(params.voiced), 1);
 
-    // Pitch is logarithmic: a semitone matters the same at the top of the
-    // range as at the bottom.
-    let period = (params.pitch as f32).clamp(PITCH_MIN as f32, PITCH_MAX as f32);
-    let pitch_code = quantize(
+// ---------------------------------------------------------------------------
+// Field codecs. Lifted out of `pack`/`unpack` so the half-rate superframe
+// layout quantizes identically rather than growing a second set of tables.
+// ---------------------------------------------------------------------------
+
+/// Pitch is logarithmic: a semitone matters the same at the top of the range
+/// as at the bottom.
+pub(super) fn pitch_code(pitch: u8) -> u32 {
+    let period = (pitch as f32).clamp(PITCH_MIN as f32, PITCH_MAX as f32);
+    quantize(
         math::log2(period),
         math::log2(PITCH_MIN as f32),
         math::log2(PITCH_MAX as f32),
-        6,
-    );
-    writer.write(pitch_code, 6);
+        PITCH_BITS,
+    )
+}
 
-    let gain_code = if params.gain <= 0.0 {
-        0
+pub(super) fn pitch_from_code(code: u32) -> u8 {
+    let period = math::exp2(dequantize(
+        code,
+        math::log2(PITCH_MIN as f32),
+        math::log2(PITCH_MAX as f32),
+        PITCH_BITS,
+    ));
+    (period + 0.5).clamp(PITCH_MIN as f32, PITCH_MAX as f32) as u8
+}
+
+/// Level zero means silence, so a real gain never quantizes below one.
+pub(super) fn gain_code(gain: f32) -> u32 {
+    if gain <= 0.0 {
+        return 0;
+    }
+    quantize(math::log2(gain), GAIN_MIN_LOG2, GAIN_MAX_LOG2, GAIN_BITS).max(1)
+}
+
+pub(super) fn gain_from_code(code: u32) -> f32 {
+    if code == 0 {
+        0.0
     } else {
-        // Level 0 means silence, so real gains start at 1.
-        let code = quantize(math::log2(params.gain), GAIN_MIN_LOG2, GAIN_MAX_LOG2, 5);
-        code.max(1)
-    };
-    writer.write(gain_code, 5);
+        math::exp2(dequantize(code, GAIN_MIN_LOG2, GAIN_MAX_LOG2, GAIN_BITS))
+    }
+}
 
+/// Reflection coefficient `index`, quantized as a log area ratio for the
+/// first two and directly for the rest.
+pub(super) fn rc_code(index: usize, k: f32) -> u32 {
+    let bits = RC_BITS[index];
+    if index < 2 {
+        quantize(to_lar(k), -LAR_LIMIT, LAR_LIMIT, bits)
+    } else {
+        quantize(k, -RC_LIMIT, RC_LIMIT, bits)
+    }
+}
+
+pub(super) fn rc_from_code(index: usize, code: u32) -> f32 {
+    let bits = RC_BITS[index];
+    if index < 2 {
+        from_lar(dequantize(code, -LAR_LIMIT, LAR_LIMIT, bits))
+    } else {
+        dequantize(code, -RC_LIMIT, RC_LIMIT, bits)
+    }
+}
+
+/// Pack analysed parameters into one frame.
+pub fn pack(params: &Params) -> [u8; FRAME_BYTES] {
+    let mut writer = BitWriter::<FRAME_BYTES>::new();
+    writer.write(u32::from(params.voiced), 1);
+    writer.write(pitch_code(params.pitch), PITCH_BITS);
+    writer.write(gain_code(params.gain), GAIN_BITS);
     for (i, &k) in params.rc.iter().enumerate() {
-        let bits = RC_BITS[i];
-        let code = if i < 2 {
-            quantize(to_lar(k), -LAR_LIMIT, LAR_LIMIT, bits)
-        } else {
-            quantize(k, -RC_LIMIT, RC_LIMIT, bits)
-        };
-        writer.write(code, bits);
+        writer.write(rc_code(i, k), RC_BITS[i]);
     }
     writer.bytes
 }
@@ -164,34 +205,12 @@ pub fn unpack(bytes: &[u8]) -> Params {
     debug_assert!(bytes.len() >= FRAME_BYTES);
     let mut reader = BitReader::new(bytes);
     let voiced = reader.read(1) == 1;
-
-    let pitch_code = reader.read(6);
-    let period = math::exp2(dequantize(
-        pitch_code,
-        math::log2(PITCH_MIN as f32),
-        math::log2(PITCH_MAX as f32),
-        6,
-    ));
-    let pitch = (period + 0.5).clamp(PITCH_MIN as f32, PITCH_MAX as f32) as u8;
-
-    let gain_code = reader.read(5);
-    let gain = if gain_code == 0 {
-        0.0
-    } else {
-        math::exp2(dequantize(gain_code, GAIN_MIN_LOG2, GAIN_MAX_LOG2, 5))
-    };
-
+    let pitch = pitch_from_code(reader.read(PITCH_BITS));
+    let gain = gain_from_code(reader.read(GAIN_BITS));
     let mut rc = [0.0f32; ORDER];
     for (i, slot) in rc.iter_mut().enumerate() {
-        let bits = RC_BITS[i];
-        let code = reader.read(bits);
-        *slot = if i < 2 {
-            from_lar(dequantize(code, -LAR_LIMIT, LAR_LIMIT, bits))
-        } else {
-            dequantize(code, -RC_LIMIT, RC_LIMIT, bits)
-        };
+        *slot = rc_from_code(i, reader.read(RC_BITS[i]));
     }
-
     Params {
         voiced,
         pitch,

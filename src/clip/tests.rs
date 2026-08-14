@@ -219,6 +219,58 @@ mod clips {
         assert_eq!(decoded.len(), 200);
     }
 
+
+    #[test]
+    fn half_rate_clip_round_trips_at_a_third_less_airtime() {
+        // The number Rung 2 exists for: the same ten seconds that costs
+        // 40 KB as ADPCM and 3.1 KB through the vocoder.
+        let pcm = speech(80_000);
+        let full = encode_clip(&pcm, ClipParams::lpc10()).unwrap();
+        let clip = encode_clip(&pcm, ClipParams::lpc10_half()).unwrap();
+
+        let (header, decoded) = decode_clip(&clip).unwrap();
+        assert_eq!(header.codec, Codec::Lpc10Half);
+        assert_eq!(header.duration_ms(), 10_000);
+        assert_eq!(decoded.len(), pcm.len());
+        assert!(clip.len() < 2_100, "ten seconds in ~2 KB, got {}", clip.len());
+
+        let saving = 1.0 - clip.len() as f32 / full.len() as f32;
+        assert!(saving > 0.33, "expected about a third off, got {saving}");
+
+        let energy = |x: &[i16]| {
+            let sum: f64 = x.iter().map(|s| (*s as f64) * (*s as f64)).sum();
+            (sum / x.len() as f64).sqrt()
+        };
+        let ratio = energy(&decoded) / energy(&pcm);
+        assert!((0.2..5.0).contains(&ratio), "level ratio {ratio}");
+    }
+
+    #[test]
+    fn half_rate_refuses_a_frame_length_it_cannot_code() {
+        let params = ClipParams {
+            frame_samples: 180,
+            ..ClipParams::lpc10_half()
+        };
+        assert!(matches!(
+            encode_clip(&speech(1_000), params),
+            Err(Error::InvalidHeader)
+        ));
+    }
+
+    #[test]
+    fn each_codec_keeps_its_own_identifier() {
+        for (params, codec, id) in [
+            (ClipParams::adpcm(), Codec::ImaAdpcm, 1u8),
+            (ClipParams::lpc10(), Codec::Lpc10, 2),
+            (ClipParams::lpc10_half(), Codec::Lpc10Half, 3),
+        ] {
+            let clip = encode_clip(&speech(4_000), params).unwrap();
+            assert_eq!(clip[6], id, "codec id byte");
+            let (header, _) = decode_clip(&clip).unwrap();
+            assert_eq!(header.codec, codec);
+        }
+    }
+
     #[test]
     fn frame_geometry_is_configurable() {
         let params = ClipParams {

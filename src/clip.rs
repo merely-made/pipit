@@ -38,6 +38,11 @@ pub enum Codec {
     /// 10th-order LPC vocoder, 2,489 bps. Mode is always 0. Frames are
     /// fixed at [`lpc10::FRAME_SAMPLES`]; sized for LoRa.
     Lpc10,
+    /// The same vocoder at half rate, 1,600 bps, by sending the spectrum
+    /// once per two frames. Mode is always 0. Frames are fixed at
+    /// [`lpc10::half::SUPERFRAME_SAMPLES`]; sized for a link where airtime
+    /// is the binding constraint.
+    Lpc10Half,
 }
 
 impl Codec {
@@ -47,6 +52,7 @@ impl Codec {
         match self {
             Self::ImaAdpcm => 1,
             Self::Lpc10 => 2,
+            Self::Lpc10Half => 3,
         }
     }
 
@@ -54,6 +60,7 @@ impl Codec {
         match id {
             1 => Ok(Self::ImaAdpcm),
             2 => Ok(Self::Lpc10),
+            3 => Ok(Self::Lpc10Half),
             other => Err(Error::UnknownCodec(other)),
         }
     }
@@ -63,6 +70,7 @@ impl Codec {
         match self {
             Self::ImaAdpcm => adpcm::frame_encoded_len(frame_samples),
             Self::Lpc10 => lpc10::FRAME_BYTES,
+            Self::Lpc10Half => lpc10::half::SUPERFRAME_BYTES,
         }
     }
 
@@ -74,6 +82,7 @@ impl Codec {
         match self {
             Self::ImaAdpcm => None,
             Self::Lpc10 => Some(lpc10::FRAME_SAMPLES as u16),
+            Self::Lpc10Half => Some(lpc10::half::SUPERFRAME_SAMPLES as u16),
         }
     }
 }
@@ -183,6 +192,17 @@ impl ClipParams {
         }
     }
 
+    /// The vocoder at half rate, 1,600 bps: a third less airtime than
+    /// [`Self::lpc10`], at the cost of spectral detail during fast
+    /// articulation.
+    pub const fn lpc10_half() -> Self {
+        Self {
+            codec: Codec::Lpc10Half,
+            sample_rate: 8_000,
+            frame_samples: crate::lpc10::half::SUPERFRAME_SAMPLES as u16,
+        }
+    }
+
     /// The vocoder at 8 kHz, in the only frame length it accepts. This is
     /// the setting for a link where bytes are scarce.
     pub const fn lpc10() -> Self {
@@ -228,6 +248,7 @@ mod with_alloc {
 
         let mut adpcm_encoder = adpcm::Encoder::new();
         let mut lpc_encoder = lpc10::Encoder::new();
+        let mut half_encoder = lpc10::half::Encoder::new();
         let mut scratch = vec![0i16; frame_samples];
         let frame_len = params.codec.frame_encoded_len(frame_samples);
         for (i, chunk) in pcm.chunks(frame_samples).enumerate() {
@@ -241,6 +262,7 @@ mod with_alloc {
             match params.codec {
                 Codec::ImaAdpcm => adpcm_encoder.encode_frame(&scratch, frame)?,
                 Codec::Lpc10 => lpc_encoder.encode_frame(&scratch, frame)?,
+                Codec::Lpc10Half => half_encoder.encode_superframe(&scratch, frame)?,
             };
         }
         Ok(out)
@@ -259,6 +281,7 @@ mod with_alloc {
         let frame_len = header.codec.frame_encoded_len(frame_samples);
         let mut pcm = vec![0i16; header.sample_count as usize];
         let mut lpc_decoder = lpc10::Decoder::new();
+        let mut half_decoder = lpc10::half::Decoder::new();
         // The vocoder always renders a whole frame; a trailing partial one
         // is rendered here and trimmed on the way out.
         let mut scratch = vec![0i16; frame_samples];
@@ -271,6 +294,10 @@ mod with_alloc {
                 },
                 Codec::Lpc10 => {
                     lpc_decoder.decode_frame(frame, &mut scratch)?;
+                    out.copy_from_slice(&scratch[..out.len()]);
+                },
+                Codec::Lpc10Half => {
+                    half_decoder.decode_superframe(frame, &mut scratch)?;
                     out.copy_from_slice(&scratch[..out.len()]);
                 },
             }
