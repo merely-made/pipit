@@ -1,0 +1,19 @@
+[package]
+name = "pipit"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "A small speech codec for voices that travel light: framed IMA ADPCM with self-describing clips, no_std and dependency-free, for voice messages and calls over constrained links."
+repository = "https://github.com/merely-made/pipit"
+readme = "README.md"
+keywords = ["audio", "codec", "speech", "adpcm", "no-std"]
+categories = ["multimedia::audio", "no-std", "embedded"]
+exclude = ["design_docs/"]
+
+[features]
+# `alloc` buys the whole-clip conveniences (`encode_clip` / `decode_clip`).
+# Firmware turns it off and drives the frame API over its own buffers.
+default = ["alloc"]
+alloc = []
+
+[dependencies]
