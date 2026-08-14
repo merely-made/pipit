@@ -4,8 +4,8 @@ A small speech codec for voices that travel light.
 
 ## Status (2026-08-13)
 
-Founded and published as `pipit` 0.1.0. All three rungs of the plan are
-implemented and tested.
+Published as `pipit` 0.2.0. All three rungs of the plan are implemented
+and tested.
 
 Three codecs, one for each kind of link:
 
